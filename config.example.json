@@ -1,0 +1,10 @@
+{
+  "printer_uri": "ipp://192.168.1.100/ipp/print",
+  "image_path": "/volume1/Contents/AutoPrint/monthly_print.jpg",
+  "paper_size": "iso_a4_210x297mm",
+  "borderless": true,
+  "scaling": "fit",
+  "color": true,
+  "print_quality": "high",
+  "log_file": "logs/autoprint.log"
+}

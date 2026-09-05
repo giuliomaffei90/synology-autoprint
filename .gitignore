@@ -1,0 +1,5 @@
+config.json
+logs/
+__pycache__/
+*.jpg
+.DS_Store

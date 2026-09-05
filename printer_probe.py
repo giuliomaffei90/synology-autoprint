@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Discovery stampante: porte aperte + attributi IPP.
+"""Printer discovery: open ports plus IPP attributes.
 
-Usato anche come modulo: monthly_print.py importa le funzioni IPP da qui.
-Solo stdlib.
+Also used as a module: monthly_print.py imports the IPP helpers from here.
+Standard library only.
 """
 import http.client
 import socket
@@ -10,7 +10,7 @@ import ssl
 import struct
 import sys
 
-# --- tag IPP ---------------------------------------------------------------
+# --- IPP tags --------------------------------------------------------------
 TAG_INT, TAG_BOOL, TAG_ENUM = 0x21, 0x22, 0x23
 TAG_RANGE, TAG_BEGCOLL, TAG_ENDCOLL = 0x33, 0x34, 0x37
 TAG_TEXT, TAG_NAME, TAG_KEYWORD = 0x41, 0x42, 0x44
@@ -28,7 +28,7 @@ def _attr(tag, name, value):
 
 
 def build_request(op, printer_uri, op_attrs=(), job_attrs=(), request_id=1):
-    """Header IPP 2.0 + gruppo operation (+ gruppo job) + end-of-attributes."""
+    """IPP 2.0 header + operation group (+ job group) + end-of-attributes."""
     out = struct.pack(">HHI", 0x0200, op, request_id)
     out += b"\x01"
     out += _attr(TAG_CHARSET, b"attributes-charset", b"utf-8")
@@ -58,7 +58,7 @@ def _decode(tag, raw):
 
 
 def parse_response(data):
-    """-> (status_code, {nome: [valori]}). I collection annidati vengono saltati."""
+    """-> (status_code, {name: [values]}). Nested collections are skipped."""
     status = struct.unpack(">H", data[2:4])[0]
     attrs, last, depth, i = {}, None, 0, 8
     while i < len(data):
@@ -66,7 +66,7 @@ def parse_response(data):
         i += 1
         if tag == 0x03:
             break
-        if tag < 0x10:  # delimitatore di gruppo
+        if tag < 0x10:  # group delimiter
             continue
         (nlen,) = struct.unpack(">H", data[i:i + 2])
         i += 2
@@ -82,7 +82,7 @@ def parse_response(data):
         if tag == TAG_ENDCOLL:
             depth -= 1
             continue
-        if depth:  # membro di collection: non serve per le decisioni
+        if depth:  # collection member: not needed for any decision here
             continue
         val = _decode(tag, raw)
         if nlen == 0 and last:
@@ -94,10 +94,10 @@ def parse_response(data):
 
 
 def ipp_call(uri, body, timeout=20):
-    """POST application/ipp verso uri. -> (status_ipp, attrs). Solleva su HTTP != 200.
+    """POST application/ipp to uri. -> (ipp_status, attrs). Raises on HTTP != 200.
 
-    ipp:// in chiaro; ipps:// in TLS. Su HTTP 426 (Upgrade Required) ritenta in TLS.
-    Certificato non verificato: le stampanti usano certificati self-signed.
+    ipp:// is plain text, ipps:// is TLS. An HTTP 426 (Upgrade Required) is retried
+    over TLS. The certificate is not verified: printers ship self-signed ones.
     """
     scheme, _, rest = uri.partition("://")
     hostport, _, path = rest.partition("/")
@@ -118,7 +118,7 @@ def ipp_call(uri, body, timeout=20):
                 tls = True
                 continue
             if resp.status != 200:
-                raise RuntimeError(f"HTTP {resp.status} {resp.reason} da {uri}")
+                raise RuntimeError(f"HTTP {resp.status} {resp.reason} from {uri}")
             return parse_response(data)
         finally:
             conn.close()
@@ -149,16 +149,16 @@ INTERESTING = [
 
 def main(argv):
     if len(argv) < 2:
-        print("uso: printer_probe.py <ip-stampante> [percorso-ipp]")
+        print("usage: printer_probe.py <printer-ip> [ipp-path]")
         return 2
     ip = argv[1]
     paths = [argv[2]] if len(argv) > 2 else ["/ipp/print", "/ipp/printer", "/ipp", "/"]
 
-    print(f"== Stampante {ip} ==")
+    print(f"== Printer {ip} ==")
     for port, label in ((631, "IPP"), (9100, "RAW/JetDirect"), (515, "LPD")):
-        print(f"  porta {port:5d} {label:14s} {'APERTA' if port_open(ip, port) else 'chiusa'}")
+        print(f"  port {port:5d} {label:14s} {'OPEN' if port_open(ip, port) else 'closed'}")
 
-    print("\n== Attributi IPP ==")
+    print("\n== IPP attributes ==")
     for path in paths:
         uri = f"ipp://{ip}{path}"
         try:
@@ -167,9 +167,9 @@ def main(argv):
             print(f"  {uri}: {e}")
             continue
         if status >= 0x0100:
-            print(f"  {uri}: risposta IPP status 0x{status:04x}")
+            print(f"  {uri}: IPP response status 0x{status:04x}")
             continue
-        print(f"  ENDPOINT VALIDO: {uri}\n")
+        print(f"  VALID ENDPOINT: {uri}\n")
         for key in INTERESTING:
             if key in attrs:
                 vals = attrs[key]
@@ -178,11 +178,11 @@ def main(argv):
                 print(f"  {key}:\n    " + "\n    ".join(str(v) for v in vals))
         borderless = all(0 in attrs.get(f"media-{s}-margin-supported", [])
                          for s in ("left", "right", "top", "bottom"))
-        print(f"\n  -> borderless (margini 0 supportati): {'SI' if borderless else 'NO'}")
+        print(f"\n  -> borderless (zero margins supported): {'YES' if borderless else 'NO'}")
         extra = sorted(set(attrs) - set(INTERESTING))
-        print(f"  -> altri {len(extra)} attributi: {', '.join(extra[:15])}...")
+        print(f"  -> {len(extra)} other attributes: {', '.join(extra[:15])}...")
         return 0
-    print("\nNessun endpoint IPP valido trovato.")
+    print("\nNo valid IPP endpoint found.")
     return 1
 
 

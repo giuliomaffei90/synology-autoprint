@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Stampa mensile di un JPG su stampante di rete via IPP. Solo stdlib.
+"""Print a JPG on a network printer over IPP. Standard library only.
 
   python3 monthly_print.py [--dry-run] [--config config.json]
 
-Exit code: 0 = job inviato, 1 = errore, 2 = esito ignoto (non rilanciare alla cieca).
+Exit codes: 0 = job submitted, 1 = error, 2 = unknown outcome (do not blindly rerun).
 """
 import argparse
 import json
@@ -38,7 +38,7 @@ PAPER_ALIASES = {
     "letter": "na_letter_8.5x11in", "10x15": "na_index-4x6_4x6in", "13x18": "na_5x7_5x7in",
 }
 QUALITY = {"draft": 3, "normal": 4, "high": 5}
-# Motivi IPP che bloccano la stampa (oltre a qualsiasi *-error).
+# IPP state reasons that block printing, on top of any *-error reason.
 FATAL_REASONS = {"media-empty", "media-jam", "media-needed", "door-open", "cover-open",
                  "paused", "shutdown", "toner-empty", "marker-supply-empty",
                  "output-area-almost-full", "output-tray-missing", "input-tray-missing"}
@@ -47,11 +47,11 @@ log = logging.getLogger("autoprint")
 
 
 class PrintError(Exception):
-    """Errore gestito: log + exit 1."""
+    """Handled failure: logged, exit 1."""
 
 
 class Ambiguous(Exception):
-    """Invio non confermato: exit 2, non rilanciare alla cieca."""
+    """Submission not confirmed: exit 2, do not blindly rerun."""
 
 
 def setup_logging(path):
@@ -75,71 +75,71 @@ def load_config(path):
         with open(path) as f:
             cfg.update(json.load(f))
     except FileNotFoundError:
-        raise PrintError(f"config non trovata: {path}")
+        raise PrintError(f"config not found: {path}")
     except json.JSONDecodeError as e:
-        raise PrintError(f"config non valida ({path}): {e}")
+        raise PrintError(f"invalid config ({path}): {e}")
     for key in ("printer_uri", "image_path"):
         if not cfg[key]:
-            raise PrintError(f"config: '{key}' obbligatorio")
+            raise PrintError(f"config: '{key}' is required")
     cfg["paper_size"] = PAPER_ALIASES.get(str(cfg["paper_size"]).lower(), cfg["paper_size"])
     return cfg
 
 
 def jpeg_info(path):
-    """Valida l'header JPEG e ritorna (larghezza, altezza). Solleva se non è un JPEG."""
+    """Validate the JPEG header and return (width, height). Raises if not a JPEG."""
     SOF = {0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf}
     with open(path, "rb") as f:
         if f.read(2) != b"\xff\xd8":
-            raise PrintError(f"non è un JPEG (marker SOI mancante): {path}")
+            raise PrintError(f"not a JPEG (SOI marker missing): {path}")
         while True:
             byte = f.read(1)
             if not byte:
-                raise PrintError(f"JPEG troncato o corrotto: {path}")
+                raise PrintError(f"truncated or corrupt JPEG: {path}")
             if byte != b"\xff":
                 continue
             marker = f.read(1)
             while marker == b"\xff":
                 marker = f.read(1)
             if not marker:
-                raise PrintError(f"JPEG troncato o corrotto: {path}")
+                raise PrintError(f"truncated or corrupt JPEG: {path}")
             m = marker[0]
             if m == 0x01 or 0xd0 <= m <= 0xd8:
                 continue
             if m == 0xd9:
-                raise PrintError(f"JPEG senza segmento SOF: {path}")
+                raise PrintError(f"JPEG has no SOF segment: {path}")
             head = f.read(2)
             if len(head) < 2:
-                raise PrintError(f"JPEG troncato o corrotto: {path}")
+                raise PrintError(f"truncated or corrupt JPEG: {path}")
             (seglen,) = struct.unpack(">H", head)
             if m in SOF:
                 body = f.read(5)
                 if len(body) < 5:
-                    raise PrintError(f"JPEG troncato o corrotto: {path}")
+                    raise PrintError(f"truncated or corrupt JPEG: {path}")
                 height, width = struct.unpack(">HH", body[1:5])
                 return width, height
             f.seek(seglen - 2, os.SEEK_CUR)
 
 
 def media_dimensions(name):
-    """Nome PWG (iso_a4_210x297mm) -> (x, y) in centesimi di millimetro."""
+    """PWG media name (iso_a4_210x297mm) -> (x, y) in hundredths of a millimetre."""
     dims = name.rsplit("_", 1)[-1]
     if dims.endswith("mm"):
         factor, dims = 100.0, dims[:-2]
     elif dims.endswith("in"):
         factor, dims = 2540.0, dims[:-2]
     else:
-        raise PrintError(f"formato carta non riconosciuto: {name}")
+        raise PrintError(f"unrecognised paper size: {name}")
     try:
         w, h = dims.split("x")
         return round(float(w) * factor), round(float(h) * factor)
     except ValueError:
-        raise PrintError(f"formato carta non riconosciuto: {name}")
+        raise PrintError(f"unrecognised paper size: {name}")
 
 
 def job_attributes(cfg):
     quality = QUALITY.get(str(cfg["print_quality"]).lower())
     if quality is None:
-        raise PrintError(f"print_quality non valida: {cfg['print_quality']} (draft/normal/high)")
+        raise PrintError(f"invalid print_quality: {cfg['print_quality']} (draft/normal/high)")
     attrs = [
         (TAG_KEYWORD, b"print-color-mode", b"color" if cfg["color"] else b"monochrome"),
         (TAG_ENUM, b"print-quality", struct.pack(">i", quality)),
@@ -149,7 +149,7 @@ def job_attributes(cfg):
     ]
     if not cfg["borderless"]:
         return attrs + [(TAG_KEYWORD, b"media", cfg["paper_size"].encode())]
-    # Borderless = media-col con i quattro margini a 0.
+    # Borderless = media-col with all four margins set to zero.
     x, y = media_dimensions(cfg["paper_size"])
     attrs += [
         (TAG_BEGCOLL, b"media-col", b""),
@@ -166,46 +166,48 @@ def job_attributes(cfg):
 
 
 def check_printer(cfg):
-    """Raggiungibilità + stato. Ritorna gli attributi della stampante."""
+    """Reachability and state. Returns the printer attributes."""
     host = cfg["printer_uri"].partition("://")[2].partition("/")[0]
     hostname, _, port = host.partition(":")
     port = int(port or 631)
     if not port_open(hostname, port, timeout=5):
-        raise PrintError(f"stampante non raggiungibile su {hostname}:{port} "
-                         "(spenta, in standby o IP cambiato?)")
+        raise PrintError(f"printer unreachable at {hostname}:{port} "
+                         "(powered off, asleep, or changed IP?)")
     log.info("Printer reachable at %s:%d", hostname, port)
     try:
         status, attrs = get_printer_attributes(cfg["printer_uri"])
     except Exception as e:
-        raise PrintError(f"errore di comunicazione IPP con {cfg['printer_uri']}: {e}")
+        raise PrintError(f"IPP communication error with {cfg['printer_uri']}: {e}")
     if status >= 0x0100:
-        raise PrintError(f"endpoint IPP rifiutato (status 0x{status:04x}): {cfg['printer_uri']}")
+        raise PrintError(f"IPP endpoint refused the request (status 0x{status:04x}): "
+                         f"{cfg['printer_uri']}")
 
     model = attrs.get("printer-make-and-model", ["?"])[0]
     state = attrs.get("printer-state", [0])[0]
     reasons = [r for r in attrs.get("printer-state-reasons", []) if r != "none"]
-    log.info("Printer: %s - stato %s%s", model, PRINTER_STATE.get(state, state),
+    log.info("Printer: %s - state %s%s", model, PRINTER_STATE.get(state, state),
              " - " + ", ".join(reasons) if reasons else "")
 
     if not attrs.get("printer-is-accepting-jobs", [True])[0]:
-        raise PrintError("la stampante non accetta job in questo momento")
-    fatal = [r for r in reasons if r.endswith("-error") or r.split("-report")[0].split("-warning")[0] in FATAL_REASONS]
+        raise PrintError("the printer is not accepting jobs right now")
+    fatal = [r for r in reasons
+             if r.endswith("-error") or r.split("-report")[0].split("-warning")[0] in FATAL_REASONS]
     if fatal:
-        raise PrintError("stampante in errore: " + ", ".join(fatal))
+        raise PrintError("printer in error state: " + ", ".join(fatal))
     for warn in reasons:
-        log.warning("stato stampante: %s", warn)
+        log.warning("printer state: %s", warn)
 
     supported = attrs.get("document-format-supported", [])
     if supported and "image/jpeg" not in supported:
-        raise PrintError("la stampante non accetta image/jpeg via IPP: " + ", ".join(supported))
+        raise PrintError("printer does not accept image/jpeg over IPP: " + ", ".join(supported))
     media = attrs.get("media-supported", [])
     if media and cfg["paper_size"] not in media:
-        raise PrintError(f"formato carta non supportato: {cfg['paper_size']}")
+        raise PrintError(f"paper size not supported: {cfg['paper_size']}")
     if cfg["borderless"] and 0 not in attrs.get("media-top-margin-supported", [0]):
-        raise PrintError("borderless non supportato dalla stampante: imposta \"borderless\": false")
+        raise PrintError("borderless not supported by this printer: set \"borderless\": false")
     scalings = attrs.get("print-scaling-supported", [])
     if scalings and cfg["scaling"] not in scalings:
-        raise PrintError(f"scaling '{cfg['scaling']}' non supportato: {', '.join(scalings)}")
+        raise PrintError(f"scaling '{cfg['scaling']}' not supported: {', '.join(scalings)}")
     return attrs
 
 
@@ -217,23 +219,23 @@ def send_job(cfg, image, job_name):
     ]
     body = build_request(OP_PRINT_JOB, cfg["printer_uri"], op_attrs, job_attributes(cfg),
                          request_id=2) + image
-    # Un solo tentativo: un retry rischierebbe una seconda copia stampata.
+    # One attempt only: a retry risks printing a second copy.
     try:
         status, attrs = ipp_call(cfg["printer_uri"], body, timeout=180)
     except (socket.timeout, TimeoutError):
-        raise Ambiguous("timeout durante l'invio: il job potrebbe essere stato accettato. "
-                        "Controlla la stampante prima di rilanciare.")
+        raise Ambiguous("timed out while sending: the job may have been accepted. "
+                        "Check the printer before rerunning.")
     except Exception as e:
-        raise PrintError(f"errore di comunicazione durante l'invio: {e}")
+        raise PrintError(f"communication error while sending: {e}")
     if status >= 0x0100:
-        raise PrintError(f"job rifiutato dalla stampante (status IPP 0x{status:04x}: "
-                         f"{attrs.get('status-message', ['nessun dettaglio'])[0]})")
+        raise PrintError(f"job rejected by the printer (IPP status 0x{status:04x}: "
+                         f"{attrs.get('status-message', ['no detail'])[0]})")
     return attrs.get("job-id", ["?"])[0]
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Stampa mensile di un JPG via IPP")
-    ap.add_argument("--dry-run", action="store_true", help="esegue tutti i controlli senza stampare")
+    ap = argparse.ArgumentParser(description="Print a JPG over IPP")
+    ap.add_argument("--dry-run", action="store_true", help="run every check without printing")
     ap.add_argument("--config", default="config.json")
     args = ap.parse_args(argv)
 
@@ -248,20 +250,20 @@ def main(argv=None):
     try:
         path = cfg["image_path"]
         if not os.path.isfile(path):
-            raise PrintError(f"immagine non trovata: {path}")
+            raise PrintError(f"image not found: {path}")
         if not os.access(path, os.R_OK):
-            raise PrintError(f"immagine non leggibile (permessi): {path}")
+            raise PrintError(f"image not readable (permissions): {path}")
         width, height = jpeg_info(path)
         size = os.path.getsize(path)
         log.info("Image: %s (%dx%d px, %.1f MB)", path, width, height, size / 1e6)
 
         check_printer(cfg)
-        log.info("Job: %s, scaling=%s, borderless=%s, %s, qualità=%s", cfg["paper_size"],
+        log.info("Job: %s, scaling=%s, borderless=%s, %s, quality=%s", cfg["paper_size"],
                  cfg["scaling"], cfg["borderless"],
-                 "colore" if cfg["color"] else "b/n", cfg["print_quality"])
+                 "color" if cfg["color"] else "monochrome", cfg["print_quality"])
 
         if args.dry_run:
-            log.info("Dry-run: tutti i controlli superati, nessun job inviato")
+            log.info("Dry-run: all checks passed, no job submitted")
             return OK
 
         with open(path, "rb") as f:
@@ -271,13 +273,13 @@ def main(argv=None):
         log.info("Job ID: %s", job_id)
         return OK
     except Ambiguous as e:
-        log.error("ESITO IGNOTO - %s", e)
+        log.error("UNKNOWN OUTCOME - %s", e)
         return UNKNOWN
     except PrintError as e:
         log.error("%s", e)
         return ERROR
     except Exception as e:
-        log.error("errore inatteso: %s: %s", type(e).__name__, e)
+        log.error("unexpected error: %s: %s", type(e).__name__, e)
         return ERROR
 
 

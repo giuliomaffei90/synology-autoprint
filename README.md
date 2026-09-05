@@ -143,3 +143,7 @@ printer_probe.py    discovery + encoder/parser IPP condiviso
 test_autoprint.py   self-check senza stampante
 config.example.json
 ```
+
+## Licenza
+
+MIT — vedi [LICENSE](LICENSE).
